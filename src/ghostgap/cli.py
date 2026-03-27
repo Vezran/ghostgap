@@ -365,14 +365,14 @@ def main():
             _banner()
             _header("Scanning GitHub Actions: " + target)
             hours = 72
-            _info("Looking back " + str(hours) + " hours for compromised litellm installs...")
+            _info("Looking back " + str(hours) + " hours for compromised package installs...")
 
             hits = fw.scan_ci_github(target, token, window_hours=hours)
             if hits:
                 _crit("FOUND " + str(len(hits)) + " pipeline(s) that installed compromised packages:")
                 for h in hits:
                     _p("")
-                    _crit("  litellm==" + h["version"])
+                    _crit("  " + h.get("package", "unknown") + "==" + h["version"])
                     _info("  Repo:    " + h["repo"])
                     _info("  Job:     " + h["job_name"] + " (#" + str(h["job_id"]) + ")")
                     _info("  URL:     " + h["url"])
@@ -397,14 +397,14 @@ def main():
             _banner()
             _header("Scanning GitLab CI: " + target)
             hours = 72
-            _info("Looking back " + str(hours) + " hours for compromised litellm installs...")
+            _info("Looking back " + str(hours) + " hours for compromised package installs...")
 
             hits = fw.scan_ci_gitlab(target, token, window_hours=hours)
             if hits:
                 _crit("FOUND " + str(len(hits)) + " pipeline(s) that installed compromised packages:")
                 for h in hits:
                     _p("")
-                    _crit("  litellm==" + h["version"])
+                    _crit("  " + h.get("package", "unknown") + "==" + h["version"])
                     _info("  Project: " + h["project"])
                     _info("  Job:     " + h["job_name"] + " (#" + str(h["job_id"]) + ")")
                     _info("  URL:     " + h["url"])

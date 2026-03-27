@@ -24,7 +24,7 @@ import time
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import List, Optional, Dict, Set, Tuple
+from typing import List, Optional, Dict, Set
 
 
 # ── Self-exclusion ────────────────────────────────────────────────────────────
@@ -1790,8 +1790,7 @@ class SupplyChainFirewall:
 
             try:
                 proc = subprocess.run(
-                    ["find", root, "-type", "d", "-name", "*.dist-info",
-                     "-maxdepth", "8"],
+                    ["find", root, "-maxdepth", "8", "-type", "d", "-name", "*.dist-info"],
                     capture_output=True, text=True, timeout=30,
                 )
                 for dist_dir in proc.stdout.strip().splitlines():
@@ -1898,7 +1897,7 @@ class SupplyChainFirewall:
 
         if not pkg_names:
             return hits
-        pattern_str = "(" + "|".join(re.escape(p) for p in sorted(pkg_names)) + r")[=\- ](\d+\.\d+\.\d+)"
+        pattern_str = "(" + "|".join(re.escape(p) for p in sorted(pkg_names)) + r")[=\- ]+(\d+\.\d+\.\d+)"
         version_pattern = re.compile(pattern_str, re.IGNORECASE)
 
         if not re.match(r'^[A-Za-z0-9_.-]+$', org):
@@ -2003,7 +2002,7 @@ class SupplyChainFirewall:
 
         if not pkg_names:
             return hits
-        pattern_str = "(" + "|".join(re.escape(p) for p in sorted(pkg_names)) + r")[=\- ](\d+\.\d+\.\d+)"
+        pattern_str = "(" + "|".join(re.escape(p) for p in sorted(pkg_names)) + r")[=\- ]+(\d+\.\d+\.\d+)"
         version_pattern = re.compile(pattern_str, re.IGNORECASE)
 
         if not re.match(r'^[A-Za-z0-9_%-]+(/[A-Za-z0-9_%-]+)*$', group):
