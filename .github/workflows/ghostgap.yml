@@ -1,0 +1,60 @@
+# Ghost Gap — Supply Chain Firewall
+# Drop this file into .github/workflows/ to scan every PR for compromised packages.
+#
+# What it does:
+#   1. Scans requirements.txt / package.json for known compromised packages
+#   2. Checks for .pth persistence files that survive pip uninstall
+#   3. Blocks the PR if any threats are found
+#
+# Zero config. Zero dependencies. Just works.
+
+name: Ghost Gap
+
+on:
+  pull_request:
+    paths:
+      - 'requirements*.txt'
+      - 'setup.py'
+      - 'setup.cfg'
+      - 'pyproject.toml'
+      - 'Pipfile'
+      - 'Pipfile.lock'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'yarn.lock'
+      - 'pnpm-lock.yaml'
+  push:
+    branches: [main, master]
+    paths:
+      - 'requirements*.txt'
+      - 'setup.py'
+      - 'pyproject.toml'
+      - 'package.json'
+      - 'package-lock.json'
+
+jobs:
+  supply-chain-check:
+    name: Supply Chain Firewall
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Ghost Gap
+        run: pip install ghostgap
+
+      - name: Scan Python dependencies
+        if: hashFiles('requirements*.txt') != ''
+        run: |
+          for f in requirements*.txt; do
+            if [ -f "$f" ]; then
+              echo "Scanning $f..."
+              ghostgap ci "$f"
+            fi
+          done
+
+      - name: Scan npm dependencies
+        if: hashFiles('package.json') != ''
+        run: ghostgap ci package.json
+
+      - name: Ghost Gap Assessment
+        run: ghostgap assess
