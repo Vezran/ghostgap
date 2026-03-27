@@ -319,7 +319,7 @@ class TestManifestParsing:
         assert r.total_packages == 2
         assert r.blocked == 1
 
-    def test_cargo_toml(self, tmp_path):
+    def test_cargo_lock(self, tmp_path):
         f = tmp_path / "Cargo.lock"
         f.write_text(textwrap.dedent("""\
             [[package]]
@@ -374,6 +374,42 @@ class TestManifestParsing:
         f = tmp_path / "composer.json"
         f.write_text(json.dumps({
             "require": {"phpunit/phpunit": "4.8.28"}
+        }))
+        fw = SupplyChainFirewall()
+        r = fw.scan_manifest(str(f))
+        assert r.ecosystem == Ecosystem.PHP
+        assert r.blocked == 1
+
+    def test_cargo_toml_dependencies(self, tmp_path):
+        f = tmp_path / "Cargo.toml"
+        f.write_text(textwrap.dedent("""\
+            [package]
+            name = "myapp"
+            version = "0.1.0"
+
+            [dependencies]
+            serde = "1.0.188"
+            rustdecimal = "1.23.1"
+        """))
+        fw = SupplyChainFirewall()
+        r = fw.scan_manifest(str(f))
+        assert r.ecosystem == Ecosystem.RUST
+        assert r.total_packages == 2
+        assert r.blocked == 1
+
+    def test_build_gradle_compromised(self, tmp_path):
+        f = tmp_path / "build.gradle"
+        f.write_text("implementation 'com.google.protobuf:protobuf-java:3.16.0'\n")
+        fw = SupplyChainFirewall()
+        r = fw.scan_manifest(str(f))
+        assert r.ecosystem == Ecosystem.JAVA
+        assert r.blocked == 1
+
+    def test_composer_lock(self, tmp_path):
+        f = tmp_path / "composer.lock"
+        f.write_text(json.dumps({
+            "packages": [{"name": "phpunit/phpunit", "version": "4.8.28"}],
+            "packages-dev": [],
         }))
         fw = SupplyChainFirewall()
         r = fw.scan_manifest(str(f))

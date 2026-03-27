@@ -527,6 +527,46 @@ class TestScanCiGithub:
         assert hits[0]["version"] == "1.82.7"
         assert hits[0]["job_name"] == "build"
 
+    def test_pip_equals_separator_detected(self, monkeypatch):
+        """scan_ci_github must match 'litellm==1.82.7' (== separator)."""
+        import urllib.request
+
+        repos_json = json.dumps([{"full_name": "myorg/myrepo"}]).encode()
+        runs_json = json.dumps({"workflow_runs": [{"id": 1}]}).encode()
+        jobs_json = json.dumps({"jobs": [{"id": 10, "name": "install", "html_url": "https://example.com"}]}).encode()
+        log_text = b"pip install litellm==1.82.7\nDone.\n"
+
+        class FakeResponse:
+            def __init__(self, data):
+                self._data = data
+            def read(self):
+                return self._data
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                pass
+
+        def fake_urlopen(req, **kwargs):
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            if "/repos?" in url:
+                return FakeResponse(repos_json)
+            elif "/actions/runs?" in url:
+                return FakeResponse(runs_json)
+            elif "/jobs?" in url:
+                return FakeResponse(jobs_json)
+            elif "/logs" in url:
+                return FakeResponse(log_text)
+            return FakeResponse(b"[]")
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+        fw = SupplyChainFirewall()
+        hits = fw.scan_ci_github("myorg", "ghp_faketoken123")
+
+        assert len(hits) >= 1
+        assert hits[0]["version"] == "1.82.7"
+        assert hits[0]["package"] == "litellm"
+
     def test_no_hits_when_logs_are_clean(self, monkeypatch):
         """When CI logs contain no compromised versions, no hits returned."""
         import urllib.request
