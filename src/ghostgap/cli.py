@@ -440,7 +440,7 @@ if [[ "$1" == "install" && "$#" -gt 1 ]]; then
         if [[ "$arg" != -* && "$arg" != *"/"* ]]; then
             # Split package==version
             pkg=$(echo "$arg" | sed 's/[><=!~].*//')
-            ver=$(echo "$arg" | grep -oP '(?<===)[^,]+' || true)
+            ver=$(echo "$arg" | sed -n 's/.*==\([^,]*\).*/\1/p')
             if [ -n "$pkg" ]; then
                 if [ -n "$ver" ]; then ghostgap check "$pkg" "$ver" 2>/dev/null; else ghostgap check "$pkg" 2>/dev/null; fi
                 exit_code=$?

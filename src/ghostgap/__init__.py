@@ -3,6 +3,7 @@
 __version__ = "1.0.0"
 
 from ghostgap.core import (
+    CureResult,
     Ecosystem,
     GhostGapResult,
     ManifestReport,
@@ -15,6 +16,7 @@ from ghostgap.core import (
 )
 
 __all__ = [
+    "CureResult",
     "Ecosystem",
     "GhostGapResult",
     "ManifestReport",

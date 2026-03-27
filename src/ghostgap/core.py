@@ -208,7 +208,7 @@ NPM_MALICIOUS_PATTERNS = [
     r"postinstall.*curl", r"postinstall.*wget",
     r"child_process.*exec", r"require\(['\"]child_process",
     r"require\(['\"]net['\"]", r"require\(['\"]dgram['\"]",
-    r"Buffer\.from\(.{40,},\s*['\"]base64",
+    r"Buffer\.from\([^)]{40,},\s*['\"]base64",
 ]
 
 
@@ -843,7 +843,7 @@ class SupplyChainFirewall:
             return report
 
         # Handle package-lock.json v3 format (npm 7+) which uses "packages" key
-        if "packages" in data and not any(k in data for k in ("dependencies", "devDependencies")):
+        if "packages" in data and data.get("lockfileVersion", 0) >= 3:
             packages_map = data.get("packages", {})
             for pkg_path, pkg_info in packages_map.items():
                 if not pkg_path or pkg_path == "":
@@ -874,7 +874,10 @@ class SupplyChainFirewall:
 
         for pkg, ver_spec in all_deps.items():
             report.total_packages += 1
-            ver = ver_spec.lstrip("^~>=<! ")
+            if isinstance(ver_spec, dict):
+                ver = ver_spec.get("version", "")
+            else:
+                ver = ver_spec.lstrip("^~>=<! ")
             threat = self.threat_feed.check(pkg, ver, Ecosystem.NODEJS)
             if threat:
                 report.verdicts.append(ScanVerdict(
@@ -1043,7 +1046,7 @@ class SupplyChainFirewall:
                 in_require = True
                 in_exclude = False
                 continue
-            if line.startswith(("exclude ", "exclude (", "retract ", "retract (")):
+            if line.startswith(("exclude ", "exclude (", "retract ", "retract (", "replace ", "replace (")):
                 in_exclude = True
                 in_require = False
                 continue
@@ -1261,7 +1264,8 @@ class SupplyChainFirewall:
             for line in proc.stdout.split("\n"):
                 if line.startswith("Version:"):
                     ver = line.split(":")[1].strip()
-                    if ver in ("1.82.7", "1.82.8"):
+                    litellm_threat = self.threat_feed.get_threat("litellm", Ecosystem.PYTHON)
+                    if litellm_threat and ver in litellm_threat.bad_versions:
                         result.compromised_version = ver
                         result.infected = True
                         result.safe = False
@@ -1992,7 +1996,7 @@ class SupplyChainFirewall:
 
         version_pattern = re.compile(r"litellm[=\-](\d+\.\d+\.\d+)", re.IGNORECASE)
 
-        if not re.match(r'^[A-Za-z0-9_./%-]+$', group):
+        if not re.match(r'^[A-Za-z0-9_%-]+(/[A-Za-z0-9_%-]+)*$', group):
             return hits
 
         # Get group ID
@@ -2029,7 +2033,11 @@ class SupplyChainFirewall:
                 for job in jobs:
                     started = job.get("started_at", "")
                     if started:
-                        ts = datetime.fromisoformat(started.replace("Z", "+00:00"))
+                        try:
+                            ts = datetime.fromisoformat(started.replace("Z", "+00:00"))
+                        except ValueError:
+                            # Python 3.8-3.10 doesn't support timezone in fromisoformat
+                            ts = datetime.strptime(started.replace("Z", "+0000"), "%Y-%m-%dT%H:%M:%S%z")
                         if ts < window_start:
                             break  # Jobs are in reverse chronological order
 
