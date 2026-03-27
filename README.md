@@ -67,7 +67,7 @@ ghostgap: one command, finds everything, fixes everything, doesn't trigger the m
 | Transitive dependencies (dspy, agent frameworks) | "Check if you installed litellm" | `ghostgap scan-all` checks every installed package |
 | CI/CD pipeline exposure | Separate GitHub/GitLab gist scripts | `ghostgap ci-scan github <org>` / `gitlab <group>` built in |
 | Credential rotation | "Rotate all secrets manually" | Auto-rotates SSH, AWS, GCP, Azure, K8s, Git, Docker, HF, Terraform |
-| K8s rogue pods | Not mentioned in most advisories | Auto-scans kube-system, kills rogue pods + deployments |
+| K8s rogue pods | Not mentioned in most advisories | Auto-scans kube-system, detects and reports suspicious pods |
 | Ongoing protection | Run once, forget | `ghostgap protect` hooks into every `pip install` automatically |
 | C2 domain detection | IOC list to check manually | Scans .pth files and source for `models.litellm.cloud` / `checkmarx.zone` |
 | Multi-ecosystem | Python only (or npm only) | Python, npm, Ruby, Rust, Go, Java, PHP, Docker |
@@ -115,15 +115,22 @@ ghostgap unprotect                  # Remove auto-protection
 
 ### Manifest Scanning
 ```bash
-ghostgap scan requirements.txt     # Python
+ghostgap scan requirements.txt     # Python (requirements)
+ghostgap scan pyproject.toml       # Python (PEP 621 + Poetry)
+ghostgap scan Pipfile              # Python (Pipfile)
+ghostgap scan Pipfile.lock         # Python (Pipfile.lock)
 ghostgap scan package.json         # Node.js
+ghostgap scan package-lock.json    # Node.js (v1/v2/v3 lockfiles)
 ghostgap scan Gemfile              # Ruby
 ghostgap scan Cargo.toml           # Rust
 ghostgap scan go.mod               # Go
-ghostgap scan pom.xml              # Java
+ghostgap scan pom.xml              # Java (Maven)
+ghostgap scan build.gradle         # Java (Gradle)
 ghostgap scan composer.json        # PHP
+ghostgap scan composer.lock        # PHP (lockfile)
 ghostgap scan Dockerfile           # Docker (FROM tags + curl|bash)
 ghostgap ci requirements.txt       # CI/CD gate (exit 0=clean, 1=blocked)
+ghostgap ci Dockerfile --strict    # CI/CD gate (--strict blocks REVIEW verdicts too)
 ```
 
 ### CI/CD Pipeline Scanning
@@ -290,8 +297,8 @@ The verdict logic minimizes false positives: credential access alone is common i
 
 | Service | What it does |
 |---------|-------------|
-| **SSH** | Generates new ed25519 key, backs up old keys |
-| **AWS** | Creates new IAM access key, deletes old one, updates `~/.aws/credentials` |
+| **SSH** | Generates new ed25519 key, backs up and removes old keys |
+| **AWS** | Creates new IAM access key, deactivates old one, updates `~/.aws/credentials` |
 | **GCP** | Removes compromised ADC, prompts re-auth |
 | **Azure** | Removes all Azure token JSON files, backs up |
 | **Kubernetes** | Backs up `~/.kube/config`, prompts re-gen for EKS/GKE/AKS |
@@ -341,6 +348,7 @@ hits = fw.scan_installed()
 
 # CI/CD gate
 exit_code = fw.ci_gate("requirements.txt")  # 0=clean, 1=blocked
+exit_code = fw.ci_gate("Dockerfile", strict=True)  # also blocks REVIEW verdicts
 
 # Deep filesystem scan (all Python environments)
 hits = fw.deep_scan_filesystem()
@@ -373,10 +381,10 @@ fw.threat_feed.add(ThreatRecord(
 | Auto credential rotation | Yes | No | No | No |
 | Safe on infected machines | **Yes** (bash bootstrap only) | No | No | No |
 | .pth persistence detection | Yes | No | No | No |
-| K8s rogue pod scanning | Yes | No | No | No |
+| K8s rogue pod detection | Yes | No | No | No |
 | CI/CD pipeline scanning | Yes | No | No | No |
 | 8 ecosystems in one tool | Yes | pip only | pip only | Yes |
-| Manifest scanning (10+ formats) | Yes | pip only | pip only | Yes |
+| Manifest scanning (14 formats) | Yes | pip only | pip only | Yes |
 | Deep source code scan | Yes | No | No | Limited |
 | Dockerfile scanning | Yes | No | No | Yes |
 | Auto-protect pip installs | Yes | No | No | No |
