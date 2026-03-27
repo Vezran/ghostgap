@@ -50,15 +50,13 @@ FOUND_PTH=0
 
 # Search ALL site-packages directories on this machine
 # Include venvs, Homebrew, pyenv, conda, pipx, system — everything
-SEARCH_ROOTS="/usr/lib /usr/local/lib /opt"
-[ -d "$HOME" ] && SEARCH_ROOTS="$SEARCH_ROOTS $HOME"
-[ -d "/opt/homebrew" ] && SEARCH_ROOTS="$SEARCH_ROOTS /opt/homebrew"
+SEARCH_PATHS=(/usr/lib /usr/local/lib /opt)
+[ -d "$HOME" ] && SEARCH_PATHS+=("$HOME")
+[ -d "/opt/homebrew" ] && SEARCH_PATHS+=("/opt/homebrew")
+SEARCH_PATHS+=("$(pwd)")
 
-# Also search current directory tree (for venvs in project dirs)
-SEARCH_ROOTS="$SEARCH_ROOTS $(pwd)"
-
-for site_dir in $(find $SEARCH_ROOTS \
-    -type d -name "site-packages" -maxdepth 12 2>/dev/null | sort -u | head -100); do
+while IFS= read -r site_dir; do
+    [ -d "$site_dir" ] || continue
 
     # Check for known malicious .pth files
     for pth_file in "$site_dir"/litellm_init.pth; do
@@ -84,7 +82,7 @@ for site_dir in $(find $SEARCH_ROOTS \
             echo -e "${GREEN}  ✓ Quarantined${RESET}"
         fi
     done
-done
+done < <(find "${SEARCH_PATHS[@]}" -type d -name "site-packages" -maxdepth 12 2>/dev/null | sort -u)
 
 if [ "$FOUND_PTH" -eq 0 ]; then
     echo -e "${GREEN}  ✓ No malicious .pth files found${RESET}"
@@ -137,11 +135,12 @@ echo -e "${CYAN}${BOLD}  Step 3: Checking litellm version${RESET}"
 
 # Use python -S to skip site.py processing (no .pth execution)
 LITELLM_VER=""
+PYTHON_CMD=""
 for py in python3 python; do
     if command -v "$py" >/dev/null 2>&1; then
-        LITELLM_VER=$($py -S -c "
-import importlib.metadata
+        LITELLM_VER=$($py -c "
 try:
+    import importlib.metadata
     print(importlib.metadata.version('litellm'))
 except Exception:
     print('')
@@ -150,6 +149,11 @@ except Exception:
         break
     fi
 done
+
+if [ -z "$PYTHON_CMD" ]; then
+    echo -e "${RED}${BOLD}  Python not found. Install Python 3 and re-run.${RESET}"
+    exit 1
+fi
 
 if [ -z "$LITELLM_VER" ]; then
     echo -e "${GREEN}  ✓ litellm is not installed${RESET}"
@@ -179,7 +183,7 @@ import ghostgap
 " 2>/dev/null; then
     echo -e "${YELLOW}  Installing ghostgap...${RESET}"
     "$PYTHON_CMD" -S -m pip install ghostgap -q 2>/dev/null || \
-    "$PYTHON_CMD" -S -m pip install ghostgap --break-system-packages -q 2>/dev/null || \
+    "$PYTHON_CMD" -S -m pip install --user ghostgap -q 2>/dev/null || \
         echo -e "${YELLOW}  Could not install ghostgap — install manually: pip install ghostgap${RESET}"
 fi
 
@@ -223,7 +227,7 @@ if os.path.isdir(sp):
 from ghostgap.cli import main
 sys.argv = ['ghostgap', 'cure']
 main()
-" 2>/dev/null || {
+" || {
     echo -e "${YELLOW}  ghostgap not available — manual steps:${RESET}"
     echo -e "${YELLOW}    1. Rotate all SSH keys: ssh-keygen -t ed25519${RESET}"
     echo -e "${YELLOW}    2. Rotate AWS keys: aws iam create-access-key${RESET}"
@@ -233,12 +237,20 @@ main()
     echo -e "${YELLOW}    6. Revoke all GitHub/GitLab tokens${RESET}"
 }
 
+CURE_EXIT=$?
 echo ""
 if [ "$FOUND_PTH" -eq 1 ] || [ "$FOUND_PERSIST" -eq 1 ]; then
-    echo -e "${GREEN}${BOLD}  ╔════════════════════════════════════════════════════════╗${RESET}"
-    echo -e "${GREEN}${BOLD}  ║   ✓  GHOST GAP CLOSED                                ║${RESET}"
-    echo -e "${GREEN}${BOLD}  ║   .pth quarantined → persistence cleaned → cured      ║${RESET}"
-    echo -e "${GREEN}${BOLD}  ╚════════════════════════════════════════════════════════╝${RESET}"
+    if [ "$CURE_EXIT" -eq 0 ]; then
+        echo -e "${GREEN}${BOLD}  ╔════════════════════════════════════════════════════════╗${RESET}"
+        echo -e "${GREEN}${BOLD}  ║   ✓  GHOST GAP CLOSED                                ║${RESET}"
+        echo -e "${GREEN}${BOLD}  ║   .pth quarantined → persistence cleaned → cured      ║${RESET}"
+        echo -e "${GREEN}${BOLD}  ╚════════════════════════════════════════════════════════╝${RESET}"
+    else
+        echo -e "${YELLOW}${BOLD}  ╔════════════════════════════════════════════════════════╗${RESET}"
+        echo -e "${YELLOW}${BOLD}  ║   ⚠  PARTIAL REMEDIATION                             ║${RESET}"
+        echo -e "${YELLOW}${BOLD}  ║   .pth quarantined but cure had errors — review above ║${RESET}"
+        echo -e "${YELLOW}${BOLD}  ╚════════════════════════════════════════════════════════╝${RESET}"
+    fi
 else
     echo -e "${GREEN}${BOLD}  ╔════════════════════════════════════════════════════════╗${RESET}"
     echo -e "${GREEN}${BOLD}  ║   ✓  NO GHOST GAP DETECTED                           ║${RESET}"

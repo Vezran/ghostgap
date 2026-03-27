@@ -163,6 +163,7 @@ def main():
         _header("Checking " + pkg + (" " + ver if ver else ""))
         verdict = fw.scan_before_install(pkg, ver, eco)
         _print_verdict(verdict)
+        sys.exit(1 if verdict.verdict == Verdict.BLOCK else 0)
 
     # ── assess ───────────────────────────────────────────────────────────
     elif cmd == "assess":
@@ -232,11 +233,16 @@ def main():
         # Final verdict
         _p("")
         _p("  \u2554" + "\u2550" * 56 + "\u2557", CYAN + BOLD)
-        if cure_result.was_infected:
+        if cure_result.was_infected and cure_result.system_clean:
             _p("  \u2551                                                        \u2551", GREEN + BOLD)
             _p("  \u2551   \u2713  GHOST GAP CLOSED                                  \u2551", GREEN + BOLD)
             _p("  \u2551   Backdoor removed. Persistence cleaned. Keys rotated. \u2551", GREEN + BOLD)
             _p("  \u2551                                                        \u2551", GREEN + BOLD)
+        elif cure_result.was_infected:
+            _p("  \u2551                                                        \u2551", RED + BOLD)
+            _p("  \u2551   \u26a0  PARTIAL REMEDIATION                                \u2551", RED + BOLD)
+            _p("  \u2551   Some threats could not be removed. See details above. \u2551", RED + BOLD)
+            _p("  \u2551                                                        \u2551", RED + BOLD)
         else:
             _p("  \u2551                                                        \u2551", GREEN + BOLD)
             _p("  \u2551   \u2713  NO GHOST GAP DETECTED                              \u2551", GREEN + BOLD)
@@ -436,7 +442,7 @@ if [[ "$1" == "install" && "$#" -gt 1 ]]; then
             pkg=$(echo "$arg" | sed 's/[><=!~].*//')
             ver=$(echo "$arg" | grep -oP '(?<===)[^,]+' || true)
             if [ -n "$pkg" ]; then
-                ghostgap check "$pkg" $ver 2>/dev/null
+                if [ -n "$ver" ]; then ghostgap check "$pkg" "$ver" 2>/dev/null; else ghostgap check "$pkg" 2>/dev/null; fi
                 exit_code=$?
                 if [ $exit_code -eq 1 ]; then
                     echo ""
@@ -499,7 +505,7 @@ command pip "$@"
             if os.path.exists(rc_path):
                 with open(rc_path, "r") as f:
                     lines = f.readlines()
-                new_lines = [l for l in lines if "ghostgap" not in l]
+                new_lines = [l for l in lines if "# Ghost Gap" not in l and 'ghostgap/pip' not in l]
                 if len(new_lines) != len(lines):
                     with open(rc_path, "w") as f:
                         f.writelines(new_lines)

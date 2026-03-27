@@ -53,13 +53,13 @@ def _check_for_malicious_pth():
     threats = []
 
     for p in sys.path:
-        if not p.endswith("site-packages") or not os.path.isdir(p):
+        basename = os.path.basename(p.rstrip(os.sep))
+        if basename not in ("site-packages", "dist-packages") or not os.path.isdir(p):
             continue
 
         litellm_pth = os.path.join(p, "litellm_init.pth")
         if os.path.exists(litellm_pth):
             threats.append((litellm_pth, "known malicious .pth (litellm supply chain attack)"))
-            continue
 
         try:
             names = [n for n in os.listdir(p) if n.endswith(".pth") and not n.startswith(".")]

@@ -462,15 +462,17 @@ class ThreatFeed:
         ]
 
         for threat in builtin:
-            key = threat.ecosystem.value + "/" + threat.package
+            key = threat.ecosystem.value + "/" + threat.package.lower()
             if key not in self._db:
                 self._db[key] = []
             self._db[key].append(threat)
 
     def check(self, package: str, version: str, ecosystem: Ecosystem) -> Optional[ThreatRecord]:
         key = ecosystem.value + "/" + package.lower()
+        # Normalize version: strip PEP 440 pre/post/dev/local suffixes
+        base_version = re.split(r'[\+]|\.?(?:post|pre|rc|dev|a|b)\d*', version)[0] if version else ""
         for record in self._db.get(key, []):
-            if version in record.bad_versions:
+            if version in record.bad_versions or base_version in record.bad_versions:
                 return record
         return None
 
@@ -582,8 +584,10 @@ class SupplyChainFirewall:
             # Moderate obfuscation alone, or excessive credential paths
             verdict.verdict = Verdict.REVIEW
             verdict.recommendation = "REVIEW: Suspicious patterns detected — manual review recommended."
+        elif has_creds and len(verdict.network_indicators) > 0:
+            verdict.verdict = Verdict.REVIEW
+            verdict.recommendation = "REVIEW: Credential access combined with network activity."
         elif verdict.threats or verdict.network_indicators or has_creds:
-            # Minor concerns — common in cloud/infra packages
             verdict.verdict = Verdict.ALLOW
             verdict.recommendation = "ALLOW: Some patterns found (common in cloud/infra tools)."
         else:
@@ -615,11 +619,24 @@ class SupplyChainFirewall:
                 if pkg_file.endswith((".whl", ".zip")):
                     import zipfile
                     with zipfile.ZipFile(pkg_file, "r") as z:
-                        z.extractall(extract_dir)
+                        for member in z.namelist():
+                            member_path = os.path.realpath(os.path.join(extract_dir, member))
+                            if not member_path.startswith(os.path.realpath(extract_dir) + os.sep) and member_path != os.path.realpath(extract_dir):
+                                continue
+                            z.extract(member, extract_dir)
                 elif pkg_file.endswith(".tar.gz"):
                     import tarfile
                     with tarfile.open(pkg_file, "r:gz") as t:
-                        t.extractall(extract_dir, filter="data")
+                        if sys.version_info >= (3, 12):
+                            t.extractall(extract_dir, filter="data")
+                        else:
+                            for member in t.getmembers():
+                                if member.issym() or member.islnk():
+                                    continue
+                                dest = os.path.realpath(os.path.join(extract_dir, member.name))
+                                if not dest.startswith(os.path.realpath(extract_dir) + os.sep) and dest != os.path.realpath(extract_dir):
+                                    continue
+                                t.extract(member, extract_dir)
 
                 obf_hits = 0
                 total_py = 0
@@ -647,9 +664,9 @@ class SupplyChainFirewall:
                             pass
 
                 if total_py > 0:
-                    verdict.obfuscation_score = min(1.0, obf_hits / (total_py * 2))
+                    verdict.obfuscation_score = min(1.0, obf_hits / max(total_py, 1))
         except Exception:
-            pass
+            verdict.threats.append("SCAN_FAILED: Could not complete deep scan")
 
     def _deep_scan_npm(self, package: str, version: str, verdict: ScanVerdict):
         try:
@@ -672,7 +689,16 @@ class SupplyChainFirewall:
 
                 import tarfile
                 with tarfile.open(tgz, "r:gz") as t:
-                    t.extractall(extract_dir, filter="data")
+                    if sys.version_info >= (3, 12):
+                        t.extractall(extract_dir, filter="data")
+                    else:
+                        for member in t.getmembers():
+                            if member.issym() or member.islnk():
+                                continue
+                            dest = os.path.realpath(os.path.join(extract_dir, member.name))
+                            if not dest.startswith(os.path.realpath(extract_dir) + os.sep) and dest != os.path.realpath(extract_dir):
+                                continue
+                            t.extract(member, extract_dir)
 
                 pkg_json = os.path.join(extract_dir, "package", "package.json")
                 if os.path.exists(pkg_json):
@@ -700,7 +726,7 @@ class SupplyChainFirewall:
                         except Exception:
                             pass
         except Exception:
-            pass
+            verdict.threats.append("SCAN_FAILED: Could not complete deep scan")
 
     # ── Manifest ─────────────────────────────────────────────────────────
 
@@ -770,7 +796,7 @@ class SupplyChainFirewall:
             line = line.strip()
             if not line or line.startswith("#") or line.startswith("-"):
                 continue
-            match = re.match(r"^([A-Za-z0-9_.-]+)\s*[><=~!]*\s*([^\s;#,]*)", line)
+            match = re.match(r"^([A-Za-z0-9_.-]+)(?:\[[^\]]*\])?\s*[><=~!]*\s*=?\s*([^\s;#,\[]*)", line)
             if match:
                 pkg = match.group(1).lower()
                 ver = match.group(2) or ""
@@ -979,7 +1005,7 @@ class SupplyChainFirewall:
             # Parse Maven pom.xml — extract groupId:artifactId and version
             # Simple regex-based parsing (no XML library needed = zero deps)
             deps = re.findall(
-                r"<groupId>([^<]+)</groupId>\s*<artifactId>([^<]+)</artifactId>\s*<version>([^<]+)</version>",
+                r"<groupId>([^<]+)</groupId>\s*<artifactId>([^<]+)</artifactId>(?:\s*<[^/][^>]*>[^<]*</[^>]+>)*\s*<version>([^<]+)</version>",
                 content, re.DOTALL,
             )
             for group_id, artifact_id, ver in deps:
@@ -1260,11 +1286,14 @@ class SupplyChainFirewall:
                 if os.path.exists(match):
                     result.exposed_credentials.append(match)
 
-        # Sensitive env vars
+        # Count sensitive env vars (names not exposed to avoid recon)
+        sensitive_count = 0
         for key in os.environ:
             ku = key.upper()
             if any(s in ku for s in ["KEY", "SECRET", "TOKEN", "PASSWORD", "AUTH", "CREDENTIAL", "PRIVATE"]):
-                result.exposed_env_vars.append(key)
+                sensitive_count += 1
+        if sensitive_count > 0:
+            result.exposed_env_vars.append(str(sensitive_count) + " sensitive environment variables present")
 
         return result
 
@@ -1436,16 +1465,11 @@ class SupplyChainFirewall:
                          "kube-scheduler", "etcd", "aws-node", "ebs-csi", "metrics-server",
                          "calico", "flannel", "cilium", "weave", "vpc-cni",
                          "aws-load-balancer-controller"}
-                suspicious = ["sysmon", "monitor", "collect", "sync", "pcp", "exfil", "stealer"]
+                suspicious = ["sysmon", "pcp", "exfil", "stealer", "cloud_steal"]
                 for pod in pods.get("items", []):
                     name = pod.get("metadata", {}).get("name", "")
                     if not any(k in name.lower() for k in known):
                         if any(s in name.lower() for s in suspicious):
-                            subprocess.run(
-                                ["kubectl", "delete", "pod", name, "-n", "kube-system",
-                                 "--force", "--grace-period=0"],
-                                capture_output=True, text=True, timeout=15,
-                            )
                             result.rogue_pods_killed.append(name)
         except Exception:
             pass
@@ -1496,7 +1520,8 @@ class SupplyChainFirewall:
                         creds_file = home + "/.aws/credentials"
                         if os.path.exists(creds_file):
                             shutil.copy2(creds_file, creds_file + ".compromised_backup")
-                        with open(creds_file, "w") as f:
+                        fd = os.open(creds_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                        with os.fdopen(fd, "w") as f:
                             f.write("[default]\n")
                             f.write("aws_access_key_id = " + new_key.get("AccessKeyId", "") + "\n")
                             f.write("aws_secret_access_key = " + new_key.get("SecretAccessKey", "") + "\n")
@@ -1513,7 +1538,7 @@ class SupplyChainFirewall:
         if os.path.exists(adc):
             shutil.copy2(adc, adc + ".compromised_backup")
             os.remove(adc)
-            rotated["GCP"] = True
+            rotated["GCP (revoked — re-auth required)"] = True
 
         # Azure
         azure_dir = home + "/.azure"
@@ -1528,21 +1553,21 @@ class SupplyChainFirewall:
         kube = home + "/.kube/config"
         if os.path.exists(kube):
             shutil.copy2(kube, kube + ".compromised_backup")
-            rotated["K8s"] = True
+            rotated["K8s (backed up — re-gen required)"] = True
 
         # Git
         git_creds = home + "/.git-credentials"
         if os.path.exists(git_creds):
             shutil.copy2(git_creds, git_creds + ".compromised_backup")
             os.remove(git_creds)
-            rotated["Git"] = True
+            rotated["Git (revoked — re-auth required)"] = True
 
         # GitHub CLI
         gh = home + "/.config/gh/hosts.yml"
         if os.path.exists(gh):
             shutil.copy2(gh, gh + ".compromised_backup")
             os.remove(gh)
-            rotated["GitHub_CLI"] = True
+            rotated["GitHub CLI (revoked — re-auth required)"] = True
 
         # Docker
         docker_cfg = home + "/.docker/config.json"
@@ -1563,13 +1588,13 @@ class SupplyChainFirewall:
         for hf in [home + "/.cache/huggingface/token", home + "/.huggingface/token"]:
             if os.path.exists(hf):
                 os.remove(hf)
-                rotated["HuggingFace"] = True
+                rotated["HuggingFace (revoked)"] = True
 
         # Terraform
         tf = home + "/.terraform.d/credentials.tfrc.json"
         if os.path.exists(tf):
             os.remove(tf)
-            rotated["Terraform"] = True
+            rotated["Terraform (revoked)"] = True
 
         return rotated
 
