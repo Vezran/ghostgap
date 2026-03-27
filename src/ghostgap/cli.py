@@ -66,11 +66,11 @@ def _banner():
 
 
 def main():
-    """CLI entry point. When invoked via the `ghostgap` command, the launcher.py
-    wrapper ensures .pth files are quarantined BEFORE Python starts, and Python
-    runs with -S flag (no .pth processing). Zero .pth execution. Zero data stolen.
+    """CLI entry point.
 
-    Can also be called directly: python -S -m ghostgap.cli
+    WARNING: When invoked via pip-installed `ghostgap`, .pth files have
+    ALREADY EXECUTED before this function runs. The pip entry point cannot
+    prevent .pth execution — use ghostgap-safe.sh for infected machines.
     """
     from ghostgap.core import SupplyChainFirewall, Ecosystem, Verdict
 

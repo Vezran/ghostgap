@@ -34,7 +34,7 @@ ghostgap assess         # Am I safe?
 ghostgap cure           # Fix everything
 ```
 
-> **Why two methods?** Python `.pth` files auto-run during interpreter startup at the C level (`Py_InitializeFromConfig` -> `site.main()` -> `addpackage()` -> line 213), BEFORE any user code. No Python tool — ours or anyone else's — can prevent this. `ghostgap-safe.sh` uses bash + `python -S` to bypass `.pth` entirely. The pip-installed `ghostgap` command quarantines `.pth` and rotates all credentials, but the `.pth` may run one final time during that invocation.
+> **Why two methods?** Python `.pth` files auto-run during interpreter startup at the C level (`Py_InitializeFromConfig` -> `site.main()` -> `addpackage()` -> line 213), BEFORE any user code. No Python tool — ours or anyone else's — can prevent this. `ghostgap-safe.sh` uses bash + `python -S` to bypass `.pth` entirely. The pip-installed `ghostgap` command **cannot prevent `.pth` execution in its own process** — by the time `main()` runs, all `.pth` code has already executed. Use the pip command on machines you know are clean, or to assess/cure after running the safe bootstrap.
 
 ---
 
@@ -243,6 +243,8 @@ The litellm 1.82.8 attack dropped `litellm_init.pth` which means:
 
 The result: `.pth` malware **never runs**. Not even once. Not in a throwaway process. Not anywhere.
 
+**The pip-installed `ghostgap` command does NOT have this property.** When you run `ghostgap` via pip, Python starts normally, `site.py` processes all `.pth` files, and the malware executes before `main()` is called. The pip command will detect and warn about malicious `.pth` files, but the damage is already done. **Always use `ghostgap-safe.sh` on potentially infected machines.**
+
 ### From our CPython forensic
 
 The execution chain is: `Py_InitializeFromConfig()` (C) -> `import site` -> `site.main()` -> `addsitepackages()` -> `addsitedir()` -> `addpackage()` -> `exec(line)`. This happens at the interpreter level before any user Python code runs. There is **no Python-level mechanism** to intercept or prevent `.pth` code execution. The `-S` flag is the only built-in defense, and our safe `.pth` parser is the only way to get site-packages imports working without `.pth` code execution.
@@ -350,7 +352,7 @@ fw.threat_feed.add(ThreatRecord(
 | Ghost Gap (post-infection cleanup) | Yes | No | No | No |
 | Cure command | Yes | No | No | No |
 | Auto credential rotation | Yes | No | No | No |
-| Safe on infected machines | **Yes** | No | No | No |
+| Safe on infected machines | **Yes** (bash bootstrap only) | No | No | No |
 | .pth persistence detection | Yes | No | No | No |
 | K8s rogue pod scanning | Yes | No | No | No |
 | CI/CD pipeline scanning | Yes | No | No | No |

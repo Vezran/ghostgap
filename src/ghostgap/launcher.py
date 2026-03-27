@@ -1,206 +1,127 @@
 """
-Ghost Gap Launcher — .pth-Safe Entry Point
-============================================
+Ghost Gap Launcher
+==================
 
-HOW .pth ATTACKS WORK (from CPython source, Lib/site.py line 212):
+IMPORTANT — .pth LIMITATION:
 
-    if line.startswith(("import ", "import\\t")):
-        exec(line)  # <-- this is the attack vector
+When you run `ghostgap` (installed via pip), Python's interpreter startup
+processes ALL .pth files in site-packages BEFORE this code executes.
 
-Any .pth file in site-packages with a line starting with "import " gets
-passed to exec() during Python startup — BEFORE any user code runs.
-There is no Python-level way to prevent this.
+    CPython startup chain:
+    Py_InitializeFromConfig -> import site -> site.main() -> addpackage()
+    -> exec(line)  # for every .pth "import ..." line (Lib/site.py:212)
 
-HOW WE PREVENT IT:
+If a malicious .pth file exists (e.g., litellm_init.pth), its code has
+ALREADY EXECUTED by the time this function is called. This is a fundamental
+limitation of any pip-installed Python tool — not a bug in ghostgap, but
+a design constraint of CPython's .pth mechanism.
 
-    1. Entry point starts Python (yes, .pth fires — but this process
-       immediately exec's to bash, doing ZERO work)
-    2. Bash quarantines malicious .pth files using find/grep/mv
-    3. Bash launches Python with -S flag (skips site.py entirely)
-    4. The -S process runs a safe .pth parser that:
-       - Adds site-packages to sys.path
-       - Processes .pth PATH entries (namespace packages, editable installs)
-       - BLOCKS all .pth "import" lines (the attack vector)
-    5. Ghostgap runs in this clean Python process
+No Python-level code can prevent .pth execution in its own process.
+The -S flag is the only built-in defense, and it must be set BEFORE
+the interpreter starts — which a console_script entry point cannot do.
 
-RESULT: .pth executable lines NEVER run. Path entries still work.
-        Zero data stolen. Zero code execution.
+FOR INFECTED MACHINES, use the bash bootstrap instead:
+
+    curl -sSL https://raw.githubusercontent.com/Vezran/ghostgap/main/ghostgap-safe.sh | bash
+
+The bash script uses system tools (find/grep/mv) to quarantine .pth files
+BEFORE starting Python, then launches Python with -S. No .pth execution.
 """
 
 import os
 import sys
-import subprocess
-import tempfile
 
 
-# The safe .pth parser — runs inside the -S Python process.
-# Processes path entries but BLOCKS all executable lines.
-SAFE_PTH_BOOTSTRAP = r'''
-import sys, os
+# C2 domains and function names from known litellm supply chain attack
+_C2_SIGNATURES = (
+    "models.litellm.cloud",
+    "checkmarx.zone",
+    "cloud_stealer",
+    "sysmon_collect",
+    "steal_creds",
+    "harvest_keys",
+    "c2_callback",
+)
 
-def _ghostgap_safe_site_setup():
-    """Add site-packages to sys.path and process .pth path entries only.
-    Executable .pth lines (import ...) are BLOCKED and logged."""
 
-    prefix = sys.prefix
-    if os.name == 'nt':
-        site_dirs = [os.path.join(prefix, 'Lib', 'site-packages')]
-    else:
-        site_dirs = [
-            os.path.join(prefix, 'lib',
-                         'python{}.{}'.format(sys.version_info[0], sys.version_info[1]),
-                         'site-packages'),
-        ]
+def _check_for_malicious_pth():
+    """Check if known malicious .pth files exist in any site-packages.
 
-    pp = os.environ.get('PYTHONPATH', '')
-    for p in pp.split(os.pathsep):
-        if p and p.endswith('site-packages') and os.path.isdir(p) and p not in site_dirs:
-            site_dirs.insert(0, p)
+    Returns list of (path, reason) tuples. If non-empty, .pth code has
+    ALREADY EXECUTED in this process — detection is after the fact.
+    """
+    threats = []
 
-    blocked = []
-
-    for site_dir in site_dirs:
-        if not os.path.isdir(site_dir):
+    for p in sys.path:
+        if not p.endswith("site-packages") or not os.path.isdir(p):
             continue
-        if site_dir not in sys.path:
-            sys.path.append(site_dir)
+
+        litellm_pth = os.path.join(p, "litellm_init.pth")
+        if os.path.exists(litellm_pth):
+            threats.append((litellm_pth, "known malicious .pth (litellm supply chain attack)"))
+            continue
 
         try:
-            names = sorted(n for n in os.listdir(site_dir)
-                           if n.endswith('.pth') and not n.startswith('.'))
+            names = [n for n in os.listdir(p) if n.endswith(".pth") and not n.startswith(".")]
         except OSError:
             continue
 
         for name in names:
-            fullname = os.path.join(site_dir, name)
+            fullpath = os.path.join(p, name)
             try:
-                with open(fullname, 'rb') as f:
-                    raw = f.read()
-                content = raw.decode('utf-8-sig', errors='replace')
+                with open(fullpath, "r", errors="replace") as f:
+                    content = f.read()
             except (OSError, UnicodeDecodeError):
                 continue
+            for sig in _C2_SIGNATURES:
+                if sig in content:
+                    threats.append((fullpath, "C2 signature: " + sig))
+                    break
 
-            for line in content.splitlines():
-                ls = line.strip()
-                if not ls or ls.startswith('#'):
-                    continue
-                # BLOCK executable lines — the attack vector
-                if ls.startswith(('import ', 'import\t')):
-                    blocked.append((name, ls[:120]))
-                    continue
-                # Process as directory path (safe)
-                d = os.path.join(site_dir, line.rstrip())
-                if os.path.isdir(d) and d not in sys.path:
-                    sys.path.append(d)
+    return threats
 
-    if blocked:
-        sys.stderr.write('\n')
-        for pth_name, line in blocked:
-            sys.stderr.write('  [ghostgap] BLOCKED .pth: {} : {}\n'.format(pth_name, line))
-        sys.stderr.write('\n')
 
-_ghostgap_safe_site_setup()
-del _ghostgap_safe_site_setup
-'''
+def _warn_pth_compromise(threats):
+    """Warn that malicious .pth files were detected — and already executed."""
+    RED = "\033[91m"
+    YELLOW = "\033[93m"
+    BOLD = "\033[1m"
+    RESET = "\033[0m"
+
+    sys.stderr.write("\n" + RED + BOLD)
+    sys.stderr.write("  ==============================================================\n")
+    sys.stderr.write("  WARNING: MALICIOUS .pth FILES DETECTED — ALREADY EXECUTED\n")
+    sys.stderr.write("  ==============================================================\n")
+    sys.stderr.write(RESET + "\n")
+
+    for path, reason in threats:
+        sys.stderr.write("  " + RED + BOLD + "  X " + path + RESET + "\n")
+        sys.stderr.write("      " + reason + "\n")
+
+    sys.stderr.write("\n" + YELLOW + BOLD)
+    sys.stderr.write("  These .pth files executed when Python started this process.\n")
+    sys.stderr.write("  Credentials may already be exfiltrated. The ghostgap command\n")
+    sys.stderr.write("  (pip-installed) CANNOT prevent .pth execution in its own process.\n")
+    sys.stderr.write(RESET + "\n")
+    sys.stderr.write(YELLOW)
+    sys.stderr.write("  For SAFE remediation on infected machines, use:\n")
+    sys.stderr.write("    curl -sSL https://raw.githubusercontent.com/Vezran/ghostgap/main/ghostgap-safe.sh | bash\n")
+    sys.stderr.write(RESET + "\n")
+    sys.stderr.write("  Continuing with assessment/remediation...\n\n")
 
 
 def main():
-    """Entry point. Prevents .pth code execution entirely."""
+    """Entry point for the pip-installed ghostgap command.
 
-    # Find site-packages
-    site_packages = ""
-    for p in sys.path:
-        if p.endswith("site-packages") and os.path.isdir(p):
-            site_packages = p
-            break
+    NOTE: By the time this function runs, CPython has already processed all
+    .pth files in site-packages. If a malicious .pth exists, its code has
+    already executed. This is unavoidable for any pip-installed Python tool.
 
-    if not site_packages:
-        from ghostgap.cli import main as cli_main
-        cli_main()
-        return
+    For safe operation on potentially infected machines, use ghostgap-safe.sh.
+    """
+    threats = _check_for_malicious_pth()
+    if threats:
+        _warn_pth_compromise(threats)
 
-    python_exe = sys.executable
-    args_list = repr(sys.argv[1:]) if sys.argv[1:] else "[]"
-
-    # Write safe bootstrap to temp file
-    bootstrap_path = os.path.join(tempfile.gettempdir(), '.ghostgap_bootstrap.py')
-    with open(bootstrap_path, 'w') as f:
-        f.write(SAFE_PTH_BOOTSTRAP)
-
-    # Build bash launcher
-    launcher_script = (
-        '#!/bin/bash\n'
-        '# Ghost Gap safe launcher — quarantines .pth, launches python -S\n'
-        '\n'
-        "RED='\\033[91m'\n"
-        "GREEN='\\033[92m'\n"
-        "BOLD='\\033[1m'\n"
-        "RESET='\\033[0m'\n"
-        '\n'
-        'SITE="' + site_packages + '"\n'
-        'PY="' + python_exe + '"\n'
-        'BOOT="' + bootstrap_path + '"\n'
-        'QD="$HOME/.ghostgap_quarantine"\n'
-        'FOUND=0\n'
-        '\n'
-        '# Quarantine malicious .pth using system tools\n'
-        'for f in "$SITE"/*.pth; do\n'
-        '    [ -f "$f" ] || continue\n'
-        '    bn=$(basename "$f")\n'
-        '    if [ "$bn" = "litellm_init.pth" ]; then\n'
-        '        FOUND=1; mkdir -p "$QD"\n'
-        '        mv "$f" "$QD/${bn}.$(date +%s)"\n'
-        '        echo -e "${RED}${BOLD}  X QUARANTINED: $f${RESET}"\n'
-        '        echo -e "${GREEN}  OK .pth NEVER executed — zero data stolen${RESET}"\n'
-        '        continue\n'
-        '    fi\n'
-        '    if grep -ql "models.litellm.cloud\\|checkmarx.zone\\|cloud_stealer\\|sysmon_collect\\|steal_creds\\|harvest_keys\\|c2_callback" "$f" 2>/dev/null; then\n'
-        '        FOUND=1; mkdir -p "$QD"\n'
-        '        mv "$f" "$QD/${bn}.$(date +%s)"\n'
-        '        echo -e "${RED}${BOLD}  X QUARANTINED: $f (C2 signature)${RESET}"\n'
-        '        echo -e "${GREEN}  OK .pth NEVER executed — zero data stolen${RESET}"\n'
-        '    fi\n'
-        'done\n'
-        '\n'
-        '# Quarantine persistence\n'
-        'for p in "$HOME/.config/sysmon/sysmon.py" "$HOME/.config/sysmon"; do\n'
-        '    if [ -e "$p" ]; then\n'
-        '        FOUND=1; mkdir -p "$QD"; mv "$p" "$QD/" 2>/dev/null || true\n'
-        '        echo -e "${RED}${BOLD}  X QUARANTINED: $p${RESET}"\n'
-        '    fi\n'
-        'done\n'
-        '\n'
-        'if [ "$FOUND" -eq 1 ]; then\n'
-        '    echo ""\n'
-        '    echo -e "${GREEN}${BOLD}  OK All threats neutralized BEFORE Python started${RESET}"\n'
-        '    echo -e "${GREEN}${BOLD}  OK .pth code was NEVER executed — zero data stolen${RESET}"\n'
-        '    echo ""\n'
-        'fi\n'
-        '\n'
-        '# Launch Python -S with safe .pth parser\n'
-        '"$PY" -S -c "\n'
-        'import sys\n'
-        'with open(\\\"$BOOT\\\") as _f: _code = _f.read()\n'
-        'compiled = compile(_code, \\\"ghostgap_bootstrap\\\", \\\"exec\\\")\n'
-        'eval(compiled)\n'
-        'sys.argv = [\\\"ghostgap\\\"] + ' + args_list + '\n'
-        'from ghostgap.cli import main\n'
-        'main()\n'
-        '"\n'
-    )
-
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False, prefix='ghostgap_') as f:
-        f.write(launcher_script)
-        launcher_path = f.name
-
-    os.chmod(launcher_path, 0o755)
-
-    try:
-        result = subprocess.run(["/bin/bash", launcher_path], env=os.environ)
-        sys.exit(result.returncode)
-    finally:
-        for path in [launcher_path, bootstrap_path]:
-            try:
-                os.unlink(path)
-            except Exception:
-                pass
+    from ghostgap.cli import main as cli_main
+    cli_main()
