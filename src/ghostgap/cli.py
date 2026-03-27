@@ -289,11 +289,17 @@ def main():
     elif cmd == "ci":
         manifest = sys.argv[2] if len(sys.argv) > 2 else ""
         if not manifest:
-            print("Usage: ghostgap ci <requirements.txt | package.json>")
+            print("Usage: ghostgap ci <requirements.txt | package.json> [--strict]")
             sys.exit(1)
+        strict = "--strict" in sys.argv
         report = fw.scan_manifest(manifest)
         _print_manifest_report(report)
-        sys.exit(0 if report.overall_verdict != Verdict.BLOCK else 1)
+        if report.overall_verdict == Verdict.BLOCK:
+            sys.exit(1)
+        elif strict and report.overall_verdict == Verdict.REVIEW:
+            sys.exit(1)
+        else:
+            sys.exit(0)
 
     # ── scan-all ─────────────────────────────────────────────────────────
     elif cmd == "scan-all":

@@ -739,6 +739,26 @@ class TestProtectUnprotect:
             content = f.read()
         assert content == "# clean bashrc, no ghostgap\n"
 
+    def test_protect_via_cli_creates_wrapper(self, tmp_path, monkeypatch):
+        """Integration test: calling cli.main with 'protect' creates the wrapper."""
+        import sys as _sys
+        fake_home = str(tmp_path / "home")
+        os.makedirs(fake_home)
+        # Create a .bashrc so protect has something to modify
+        bashrc = os.path.join(fake_home, ".bashrc")
+        with open(bashrc, "w") as f:
+            f.write("# existing config\n")
+
+        monkeypatch.setattr(_sys, "argv", ["ghostgap", "protect"])
+        monkeypatch.setattr("os.path.expanduser", lambda p: p.replace("~", fake_home))
+
+        from ghostgap.cli import main as cli_main
+        cli_main()
+
+        wrapper = os.path.join(fake_home, ".ghostgap", "pip")
+        assert os.path.exists(wrapper), "protect should create ~/.ghostgap/pip"
+        assert os.access(wrapper, os.X_OK), "wrapper should be executable"
+
 
 # ===================================================================
 # 8. pnpm-lock.yaml returns REVIEW not ALLOW

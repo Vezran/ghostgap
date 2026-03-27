@@ -735,6 +735,12 @@ class SupplyChainFirewall:
     # ── Manifest ─────────────────────────────────────────────────────────
 
     def scan_manifest(self, path: str) -> ManifestReport:
+        bn = os.path.basename(path).lower()
+        # pyproject.toml and Pipfile need dedicated parsers
+        if bn == "pyproject.toml":
+            return self._scan_pyproject_toml(path)
+        if bn in ("pipfile", "pipfile.lock"):
+            return self._scan_pipfile(path)
         ecosystem = self._detect_ecosystem(path)
         parsers = {
             Ecosystem.PYTHON: self._scan_python_manifest,
@@ -818,6 +824,157 @@ class SupplyChainFirewall:
                     report.blocked += 1
                 else:
                     report.clean += 1
+
+        report.overall_verdict = Verdict.BLOCK if report.blocked > 0 else Verdict.ALLOW
+        return report
+
+    def _scan_pyproject_toml(self, path: str) -> ManifestReport:
+        """Parse pyproject.toml for compromised Python packages."""
+        report = ManifestReport(manifest_path=path, ecosystem=Ecosystem.PYTHON)
+        try:
+            with open(path) as f:
+                content = f.read()
+        except Exception:
+            return report
+
+        # PEP 621: [project] dependencies = ["litellm>=1.82.7"]
+        in_deps = False
+        for line in content.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("dependencies") and "=" in stripped:
+                in_deps = True
+                # Handle inline list: dependencies = ["pkg1", "pkg2"]
+                inline = stripped.split("=", 1)[1].strip()
+                if inline.startswith("["):
+                    for item in re.findall(r'"([^"]+)"|\'([^\']+)\'', inline):
+                        dep = item[0] or item[1]
+                        self._check_python_dep(dep, report)
+                    if "]" in inline:
+                        in_deps = False
+                continue
+            if in_deps:
+                if stripped.startswith("]"):
+                    in_deps = False
+                    continue
+                for item in re.findall(r'"([^"]+)"|\'([^\']+)\'', stripped):
+                    dep = item[0] or item[1]
+                    self._check_python_dep(dep, report)
+
+        # Poetry: [tool.poetry.dependencies] / litellm = "^1.82.7"
+        in_poetry_deps = False
+        for line in content.splitlines():
+            stripped = line.strip()
+            if re.match(r'\[tool\.poetry\.(?:dev-)?dependencies\]', stripped):
+                in_poetry_deps = True
+                continue
+            if stripped.startswith("[") and in_poetry_deps:
+                in_poetry_deps = False
+                continue
+            if in_poetry_deps and "=" in stripped:
+                parts = stripped.split("=", 1)
+                pkg = parts[0].strip().strip('"').strip("'").lower()
+                if pkg in ("python",):
+                    continue
+                ver_raw = parts[1].strip().strip('"').strip("'").strip("{}")
+                ver_match = re.search(r"(\d+\.\d+\.\d+)", ver_raw)
+                ver = ver_match.group(1) if ver_match else ""
+                report.total_packages += 1
+                threat = self.threat_feed.check(pkg, ver, Ecosystem.PYTHON)
+                if threat:
+                    report.verdicts.append(ScanVerdict(
+                        package=pkg, version=ver or "unpinned", ecosystem=Ecosystem.PYTHON,
+                        verdict=Verdict.BLOCK,
+                        threats=["KNOWN COMPROMISED: " + threat.description],
+                        recommendation="Use " + threat.safe_version,
+                    ))
+                    report.blocked += 1
+                else:
+                    report.clean += 1
+
+        report.overall_verdict = Verdict.BLOCK if report.blocked > 0 else Verdict.ALLOW
+        return report
+
+    def _check_python_dep(self, dep: str, report: ManifestReport):
+        """Check a single PEP 508 dependency string against the threat feed."""
+        m = re.match(r"^([A-Za-z0-9_.-]+)(?:\[[^\]]*\])?\s*[><=~!]*\s*=?\s*([^\s;,\[]*)", dep)
+        if m:
+            pkg = m.group(1).lower()
+            ver = m.group(2) or ""
+            report.total_packages += 1
+            threat = self.threat_feed.check(pkg, ver, Ecosystem.PYTHON)
+            if threat:
+                report.verdicts.append(ScanVerdict(
+                    package=pkg, version=ver or "unpinned", ecosystem=Ecosystem.PYTHON,
+                    verdict=Verdict.BLOCK,
+                    threats=["KNOWN COMPROMISED: " + threat.description],
+                    recommendation="Use " + threat.safe_version,
+                ))
+                report.blocked += 1
+            else:
+                report.clean += 1
+
+    def _scan_pipfile(self, path: str) -> ManifestReport:
+        """Parse Pipfile or Pipfile.lock for compromised Python packages."""
+        report = ManifestReport(manifest_path=path, ecosystem=Ecosystem.PYTHON)
+        try:
+            with open(path) as f:
+                content = f.read()
+        except Exception:
+            return report
+
+        bn = os.path.basename(path).lower()
+        if bn == "pipfile.lock":
+            # JSON format
+            try:
+                data = json.loads(content)
+                for section in ("default", "develop"):
+                    for pkg, info in data.get(section, {}).items():
+                        if pkg == "_meta":
+                            continue
+                        ver = ""
+                        if isinstance(info, dict):
+                            ver = info.get("version", "").lstrip("=")
+                        report.total_packages += 1
+                        threat = self.threat_feed.check(pkg.lower(), ver, Ecosystem.PYTHON)
+                        if threat:
+                            report.verdicts.append(ScanVerdict(
+                                package=pkg, version=ver or "unpinned", ecosystem=Ecosystem.PYTHON,
+                                verdict=Verdict.BLOCK,
+                                threats=["KNOWN COMPROMISED: " + threat.description],
+                            ))
+                            report.blocked += 1
+                        else:
+                            report.clean += 1
+            except (json.JSONDecodeError, KeyError):
+                pass
+        else:
+            # TOML-like format: [packages] / litellm = "==1.82.7"
+            in_packages = False
+            for line in content.splitlines():
+                stripped = line.strip()
+                if stripped.lower() in ("[packages]", "[dev-packages]"):
+                    in_packages = True
+                    continue
+                if stripped.startswith("[") and in_packages:
+                    in_packages = False
+                    continue
+                if in_packages and "=" in stripped:
+                    parts = stripped.split("=", 1)
+                    pkg = parts[0].strip().lower()
+                    ver_raw = parts[1].strip().strip('"').strip("'")
+                    ver_match = re.search(r"(\d+\.\d+\.\d+)", ver_raw)
+                    ver = ver_match.group(1) if ver_match else ""
+                    report.total_packages += 1
+                    threat = self.threat_feed.check(pkg, ver, Ecosystem.PYTHON)
+                    if threat:
+                        report.verdicts.append(ScanVerdict(
+                            package=pkg, version=ver or "unpinned", ecosystem=Ecosystem.PYTHON,
+                            verdict=Verdict.BLOCK,
+                            threats=["KNOWN COMPROMISED: " + threat.description],
+                        ))
+                        report.blocked += 1
+                    else:
+                        report.clean += 1
 
         report.overall_verdict = Verdict.BLOCK if report.blocked > 0 else Verdict.ALLOW
         return report
@@ -1393,6 +1550,20 @@ class SupplyChainFirewall:
         This is the Ghost Gap closer. Updating to a clean version doesn't undo the damage.
         This method finds what the patch missed and fixes it.
         """
+        import atexit
+
+        _cure_state = [False]  # mutable container for atexit closure
+
+        def _warn_interrupted():
+            if _cure_state[0]:
+                sys.stderr.write(
+                    "\n\033[91m\033[1m  WARNING: ghostgap cure was interrupted during "
+                    "credential rotation.\n  Credentials may be in an inconsistent state. "
+                    "Run 'ghostgap cure' again.\033[0m\n\n"
+                )
+
+        atexit.register(_warn_interrupted)
+
         result = CureResult()
         home = str(Path.home())
         threat = self.threat_feed.get_threat(package, Ecosystem.PYTHON)
@@ -1568,7 +1739,9 @@ class SupplyChainFirewall:
 
         # ── Rotate Credentials ───────────────────────────────────────────
         if result.was_infected:
+            _cure_state[0] = True
             result.credentials_rotated = self._rotate_all(home)
+            _cure_state[0] = False
 
         # ── Verify ───────────────────────────────────────────────────────
         gap = self.ghost_gap_assess()
@@ -1592,7 +1765,17 @@ class SupplyChainFirewall:
                  "-N", "", "-C", "rotated-by-ghostgap"],
                 capture_output=True, text=True, timeout=10,
             )
-            rotated["SSH"] = proc.returncode == 0
+            if proc.returncode == 0:
+                # Remove old compromised keys (backed up above)
+                for f in _glob.glob(ssh_dir + "/id_*"):
+                    if "rotated" not in f and "COMPROMISED" not in f:
+                        try:
+                            os.remove(f)
+                        except OSError:
+                            pass
+                rotated["SSH"] = True
+            else:
+                rotated["SSH"] = False
 
         # AWS
         try:
@@ -1603,6 +1786,17 @@ class SupplyChainFirewall:
                 arn = identity.get("Arn", "")
                 username = arn.split("/")[-1] if "/" in arn else ""
                 if username and not arn.endswith(":root"):
+                    # Get old access key ID before creating new one
+                    old_key_id = ""
+                    proc_keys = subprocess.run(
+                        ["aws", "iam", "list-access-keys", "--user-name", username],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    if proc_keys.returncode == 0:
+                        keys = json.loads(proc_keys.stdout).get("AccessKeyMetadata", [])
+                        if keys:
+                            old_key_id = keys[0].get("AccessKeyId", "")
+
                     proc2 = subprocess.run(
                         ["aws", "iam", "create-access-key", "--user-name", username],
                         capture_output=True, text=True, timeout=10,
@@ -1617,6 +1811,13 @@ class SupplyChainFirewall:
                             f.write("[default]\n")
                             f.write("aws_access_key_id = " + new_key.get("AccessKeyId", "") + "\n")
                             f.write("aws_secret_access_key = " + new_key.get("SecretAccessKey", "") + "\n")
+                        # Deactivate the old compromised key
+                        if old_key_id and old_key_id != new_key.get("AccessKeyId", ""):
+                            subprocess.run(
+                                ["aws", "iam", "update-access-key", "--user-name", username,
+                                 "--access-key-id", old_key_id, "--status", "Inactive"],
+                                capture_output=True, text=True, timeout=10,
+                            )
                         rotated["AWS"] = True
                     else:
                         rotated["AWS"] = False
@@ -1693,9 +1894,15 @@ class SupplyChainFirewall:
 
     # ── CI/CD Gate ────────────────────────────────────────────────────────
 
-    def ci_gate(self, manifest_path: str) -> int:
+    def ci_gate(self, manifest_path: str, strict: bool = False) -> int:
+        """CI/CD gate. Returns 1 for BLOCK, 0 for clean.
+        With strict=True, also returns 1 for REVIEW verdicts."""
         report = self.scan_manifest(manifest_path)
-        return 1 if report.overall_verdict == Verdict.BLOCK else 0
+        if report.overall_verdict == Verdict.BLOCK:
+            return 1
+        if strict and report.overall_verdict == Verdict.REVIEW:
+            return 1
+        return 0
 
     # ── Scan Installed Packages ─────────────────────────────────────────
 
