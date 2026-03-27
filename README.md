@@ -141,10 +141,24 @@ Drop this into `.github/workflows/ghostgap.yml`:
 name: Ghost Gap
 on:
   pull_request:
-    paths: ['requirements*.txt', 'package.json', 'pyproject.toml']
+    paths:
+      - 'requirements*.txt'
+      - 'setup.py'
+      - 'setup.cfg'
+      - 'pyproject.toml'
+      - 'Pipfile'
+      - 'Pipfile.lock'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'yarn.lock'
+      - 'pnpm-lock.yaml'
   push:
     branches: [main, master]
-    paths: ['requirements*.txt', 'package.json']
+    paths:
+      - 'requirements*.txt'
+      - 'pyproject.toml'
+      - 'package.json'
+      - 'package-lock.json'
 
 jobs:
   supply-chain-check:
@@ -152,10 +166,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: pip install ghostgap
-      - run: |
+      - name: Scan Python dependencies
+        run: |
           for f in requirements*.txt; do
             [ -f "$f" ] && ghostgap ci "$f"
           done
+      - name: Scan npm dependencies
+        if: hashFiles('package.json') != ''
+        run: ghostgap ci package.json
       - run: ghostgap assess
 ```
 
@@ -379,7 +397,7 @@ Tested against 67 manifest files across 5 ecosystems in a real production codeba
 | Docker | 22 | 21 | 1 (true positive) | 0 |
 | **Total** | **67** | **66** | **1** | **0** |
 
-29/29 unit tests passed across all 8 ecosystems.
+163/163 unit tests passed across all 8 ecosystems (6 test files, 163 tests covering threat feed, scanning, manifest parsing, verdict logic, CLI, launcher, CI scanning, and the .pth safety proof).
 
 ---
 

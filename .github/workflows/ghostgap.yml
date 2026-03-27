@@ -28,9 +28,14 @@ on:
     paths:
       - 'requirements*.txt'
       - 'setup.py'
+      - 'setup.cfg'
       - 'pyproject.toml'
+      - 'Pipfile'
+      - 'Pipfile.lock'
       - 'package.json'
       - 'package-lock.json'
+      - 'yarn.lock'
+      - 'pnpm-lock.yaml'
 
 jobs:
   supply-chain-check:

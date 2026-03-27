@@ -1,6 +1,6 @@
 """Ghost Gap — Supply Chain Firewall for pip and npm."""
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 from ghostgap.core import (
     CureResult,

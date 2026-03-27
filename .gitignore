@@ -1,8 +1,14 @@
 dist/
+build/
 __pycache__/
 *.egg-info/
 *.pyc
-build/
+*.pyo
 .venv/
-__pycache__/
+.twine-venv/
+.env
+.env.*
+*.env
 .vercel
+.DS_Store
+*.log
