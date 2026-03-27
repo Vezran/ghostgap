@@ -6,7 +6,7 @@ Updating a compromised package doesn't make you safe. The backdoor already ran. 
 
 ### If you might be infected — START HERE:
 ```bash
-curl -sSL https://raw.githubusercontent.com/ghostgap/ghostgap/main/ghostgap-safe.sh | bash
+curl -sSL https://raw.githubusercontent.com/Vezran/ghostgap/main/ghostgap-safe.sh | bash
 ```
 This is **bash, not Python.** It quarantines `litellm_init.pth` using system tools, then launches Python with `-S` (skips all .pth processing). The malware **never runs. Not even once.**
 

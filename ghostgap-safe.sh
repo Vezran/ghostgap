@@ -13,7 +13,7 @@
 #  malicious .pth files BEFORE launching Python. No Python = no .pth.
 #
 #  USAGE:
-#    curl -sSL https://raw.githubusercontent.com/ghostgap/ghostgap/main/ghostgap-safe.sh | bash
+#    curl -sSL https://raw.githubusercontent.com/Vezran/ghostgap/main/ghostgap-safe.sh | bash
 #
 #    Or download and run:
 #    chmod +x ghostgap-safe.sh

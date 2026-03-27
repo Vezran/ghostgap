@@ -10,7 +10,7 @@ readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.8"
 authors = [
-    {name = "Ghost Gap Project"},
+    {name = "Vezran x taazbro"},
 ]
 keywords = [
     "security", "supply-chain", "pip", "npm", "vulnerability",
@@ -35,10 +35,10 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/ghostgap/ghostgap"
-Documentation = "https://github.com/ghostgap/ghostgap#readme"
-Repository = "https://github.com/ghostgap/ghostgap"
-Issues = "https://github.com/ghostgap/ghostgap/issues"
+Homepage = "https://github.com/Vezran/ghostgap"
+Documentation = "https://github.com/Vezran/ghostgap#readme"
+Repository = "https://github.com/Vezran/ghostgap"
+Issues = "https://github.com/Vezran/ghostgap/issues"
 
 [project.scripts]
 ghostgap = "ghostgap.launcher:main"
