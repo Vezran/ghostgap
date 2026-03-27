@@ -180,8 +180,8 @@ class TestScanBeforeInstall:
     def test_allow_safe_version(self):
         fw = SupplyChainFirewall()
         v = fw.scan_before_install("litellm", "1.82.6")
-        # Safe version should not be BLOCK (may be ALLOW or REVIEW depending on deep scan)
-        assert v.verdict != Verdict.BLOCK or "KNOWN COMPROMISED" not in str(v.threats)
+        assert v.verdict != Verdict.BLOCK
+        assert not any("KNOWN COMPROMISED" in t for t in v.threats)
 
     def test_recommendation_includes_safe_version(self):
         fw = SupplyChainFirewall()
@@ -191,7 +191,7 @@ class TestScanBeforeInstall:
     def test_scan_time_recorded(self):
         fw = SupplyChainFirewall()
         v = fw.scan_before_install("litellm", "1.82.7")
-        assert v.scan_time_ms >= 0
+        assert v.scan_time_ms > 0
 
     def test_history_recorded(self):
         fw = SupplyChainFirewall()
@@ -539,11 +539,13 @@ class TestCIGate:
 
 
 class TestLauncherWarning:
-    def test_check_for_malicious_pth_clean(self):
+    def test_check_for_malicious_pth_clean(self, tmp_path, monkeypatch):
         from ghostgap.launcher import _check_for_malicious_pth
-        # On a clean system, this should return empty list
+        clean_dir = tmp_path / "site-packages"
+        clean_dir.mkdir()
+        monkeypatch.setattr("sys.path", [str(clean_dir)])
         threats = _check_for_malicious_pth()
-        assert isinstance(threats, list)
+        assert threats == []
 
     def test_check_for_malicious_pth_detects_litellm_init(self, tmp_path, monkeypatch):
         from ghostgap.launcher import _check_for_malicious_pth

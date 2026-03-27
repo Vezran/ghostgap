@@ -130,7 +130,7 @@ class CureResult:
     was_infected: bool = False
     backdoor_files_removed: List[str] = field(default_factory=list)
     persistence_cleaned: List[str] = field(default_factory=list)
-    rogue_pods_killed: List[str] = field(default_factory=list)
+    rogue_pods_detected: List[str] = field(default_factory=list)
     credentials_rotated: Dict[str, bool] = field(default_factory=dict)
     version_fixed: bool = False
     system_clean: bool = False
@@ -800,6 +800,8 @@ class SupplyChainFirewall:
             line = line.strip()
             if not line or line.startswith("#") or line.startswith("-"):
                 continue
+            if "://" in line:
+                continue
             match = re.match(r"^([A-Za-z0-9_.-]+)(?:\[[^\]]*\])?\s*[><=~!]*\s*=?\s*([^\s;#,\[]*)", line)
             if match:
                 pkg = match.group(1).lower()
@@ -838,6 +840,32 @@ class SupplyChainFirewall:
             with open(path) as f:
                 data = json.load(f)
         except Exception:
+            return report
+
+        # Handle package-lock.json v3 format (npm 7+) which uses "packages" key
+        if "packages" in data and not any(k in data for k in ("dependencies", "devDependencies")):
+            packages_map = data.get("packages", {})
+            for pkg_path, pkg_info in packages_map.items():
+                if not pkg_path or pkg_path == "":
+                    continue  # Skip root entry
+                # Extract package name from path like "node_modules/event-stream"
+                name = pkg_path.split("node_modules/")[-1] if "node_modules/" in pkg_path else ""
+                if not name:
+                    continue
+                ver = pkg_info.get("version", "")
+                report.total_packages += 1
+                threat = self.threat_feed.check(name, ver, Ecosystem.NODEJS)
+                if threat:
+                    report.verdicts.append(ScanVerdict(
+                        package=name, version=ver, ecosystem=Ecosystem.NODEJS,
+                        verdict=Verdict.BLOCK,
+                        threats=["KNOWN COMPROMISED: " + threat.description],
+                        recommendation="Use " + threat.safe_version,
+                    ))
+                    report.blocked += 1
+                else:
+                    report.clean += 1
+            report.overall_verdict = Verdict.BLOCK if report.blocked > 0 else Verdict.ALLOW
             return report
 
         all_deps = {}
@@ -985,9 +1013,47 @@ class SupplyChainFirewall:
 
         # go.mod: require ( \n\t github.com/foo/bar v1.2.3 \n )
         # go.sum: github.com/foo/bar v1.2.3 h1:...
+        in_require = False
+        in_exclude = False
         for line in content.splitlines():
             line = line.strip()
-            if not line or line.startswith("//") or line.startswith("module ") or line.startswith("go "):
+            if not line or line.startswith("//"):
+                continue
+            # Track block context
+            if line.startswith("require ") and "(" not in line:
+                # Single-line require: "require github.com/foo/bar v1.2.3"
+                parts = line.split(None, 2)
+                if len(parts) >= 3:
+                    m = re.match(r"^(\S+)\s+v?(\d+\.\d+\.\d+)", parts[1] + " " + parts[2])
+                    if m:
+                        pkg = m.group(1).lower()
+                        ver = m.group(2)
+                        report.total_packages += 1
+                        threat = self.threat_feed.check(pkg, ver, Ecosystem.GO)
+                        if threat:
+                            report.verdicts.append(ScanVerdict(
+                                package=pkg, version=ver, ecosystem=Ecosystem.GO,
+                                verdict=Verdict.BLOCK, threats=["KNOWN COMPROMISED: " + threat.description],
+                            ))
+                            report.blocked += 1
+                        else:
+                            report.clean += 1
+                continue
+            if line.startswith("require ("):
+                in_require = True
+                in_exclude = False
+                continue
+            if line.startswith(("exclude ", "exclude (", "retract ", "retract (")):
+                in_exclude = True
+                in_require = False
+                continue
+            if line == ")":
+                in_require = False
+                in_exclude = False
+                continue
+            if line.startswith("module ") or line.startswith("go ") or line.startswith("toolchain "):
+                continue
+            if in_exclude:
                 continue
             if "/go.mod " in line:
                 continue
@@ -1170,12 +1236,12 @@ class SupplyChainFirewall:
             spec = package + ("==" + version if version else "")
             proc = subprocess.run(
                 [sys.executable, "-m", "pip", "install", spec],
-                capture_output=True, text=True,
+                capture_output=True, text=True, timeout=300,
             )
             return proc.returncode == 0
         elif ecosystem == Ecosystem.NODEJS:
             spec = package + ("@" + version if version else "")
-            proc = subprocess.run(["npm", "install", spec], capture_output=True, text=True)
+            proc = subprocess.run(["npm", "install", spec], capture_output=True, text=True, timeout=300)
             return proc.returncode == 0
         return False
 
@@ -1492,7 +1558,7 @@ class SupplyChainFirewall:
                     name = pod.get("metadata", {}).get("name", "")
                     if not any(k in name.lower() for k in known):
                         if any(s in name.lower() for s in suspicious):
-                            result.rogue_pods_killed.append(name)
+                            result.rogue_pods_detected.append(name)
         except Exception:
             pass
 
@@ -1600,7 +1666,8 @@ class SupplyChainFirewall:
                     cfg = json.load(f)
                 if "auths" in cfg:
                     cfg["auths"] = {}
-                    with open(docker_cfg, "w") as f:
+                    fd = os.open(docker_cfg, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                    with os.fdopen(fd, "w") as f:
                         json.dump(cfg, f, indent=2)
                     rotated["Docker"] = True
             except Exception:

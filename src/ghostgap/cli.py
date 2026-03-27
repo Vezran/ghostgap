@@ -204,9 +204,9 @@ def main():
         if cure_result.persistence_cleaned:
             for f in cure_result.persistence_cleaned:
                 _ok("Cleaned: " + f)
-        if cure_result.rogue_pods_killed:
-            for pod in cure_result.rogue_pods_killed:
-                _ok("Killed pod: " + pod)
+        if cure_result.rogue_pods_detected:
+            for pod in cure_result.rogue_pods_detected:
+                _warn("Suspicious pod detected (not auto-deleted): " + pod)
         if cure_result.version_fixed:
             threat = fw.threat_feed.get_threat(pkg, Ecosystem.PYTHON)
             safe_ver = threat.safe_version if threat else "latest"

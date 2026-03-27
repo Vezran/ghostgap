@@ -91,6 +91,7 @@ class TestPthExecutesDuringStartup:
 class TestGhostgapEntryPoint:
     """Prove the pip-installed ghostgap command cannot prevent .pth execution."""
 
+    @pytest.mark.slow
     def test_entry_point_triggers_pth(self, venv_with_pth):
         """THE PROOF: running ghostgap triggers .pth before main() starts.
 

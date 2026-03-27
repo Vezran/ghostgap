@@ -157,19 +157,15 @@ class TestPomXmlParser:
 
 
 class TestObfuscationScore:
-    """Finding: total_py * 2 let large packages evade detection."""
+    """Verify obfuscation score formula in production code."""
 
-    def test_single_file_single_hit_scores_high(self):
-        """1 obfuscated file out of 1 should score 1.0, not 0.5."""
-        # The formula is now min(1.0, obf_hits / max(total_py, 1))
-        # With 1 hit and 1 file: 1/1 = 1.0
-        score = min(1.0, 1 / max(1, 1))
-        assert score == 1.0
-
-    def test_one_in_four_scores_above_review(self):
-        """1 obfuscated file out of 4 should score 0.25 (above 0.2 REVIEW)."""
-        score = min(1.0, 1 / max(4, 1))
-        assert score > 0.2
+    def test_formula_uses_correct_denominator(self):
+        """Verify core.py uses max(total_py, 1) not total_py * 2."""
+        import inspect
+        from ghostgap.core import SupplyChainFirewall
+        source = inspect.getsource(SupplyChainFirewall._deep_scan_python)
+        assert "max(total_py, 1)" in source, "Formula should use max(total_py, 1)"
+        assert "total_py * 2" not in source, "Old dampener total_py * 2 should be removed"
 
 
 # ── Fix: Launcher detects dist-packages ─────────────────────────────────────
@@ -221,38 +217,82 @@ class TestLauncherFullDirectoryScan:
 
 
 class TestVerdictCredentialNetwork:
-    """Finding: unobfuscated credential stealers were ALLOW'd."""
+    """Verify credential access + network indicators triggers REVIEW."""
 
-    def test_creds_plus_network_is_review(self):
-        """Credential access + network indicators should be REVIEW, not ALLOW."""
-        fw = SupplyChainFirewall()
-        # We can't easily trigger this through the public API without
-        # downloading a real package, but we can verify the logic directly
-        from ghostgap.core import ScanVerdict
-        v = ScanVerdict(
-            package="test", version="1.0", ecosystem=Ecosystem.PYTHON,
-            verdict=Verdict.ALLOW,
+    def test_verdict_logic_has_creds_network_branch(self):
+        """Verify the production code has the credential+network REVIEW branch."""
+        import inspect
+        from ghostgap.core import SupplyChainFirewall
+        source = inspect.getsource(SupplyChainFirewall.scan_before_install)
+        assert "has_creds and len(verdict.network_indicators)" in source, (
+            "Production code should have credential+network REVIEW branch"
         )
-        v.credential_access = ["test.py: .aws/credentials"]
-        v.network_indicators = ["test.py: requests.post"]
-        v.obfuscation_score = 0.0
 
-        # Simulate the verdict computation logic
-        has_heavy_obf = v.obfuscation_score > 0.5
-        has_moderate_obf = v.obfuscation_score > 0.2
-        has_creds = len(v.credential_access) > 0
 
-        if has_heavy_obf:
-            computed = Verdict.BLOCK
-        elif has_creds and has_moderate_obf:
-            computed = Verdict.BLOCK
-        elif has_moderate_obf or (has_creds and len(v.credential_access) > 15):
-            computed = Verdict.REVIEW
-        elif has_creds and len(v.network_indicators) > 0:
-            computed = Verdict.REVIEW
-        elif v.threats or v.network_indicators or has_creds:
-            computed = Verdict.ALLOW
-        else:
-            computed = Verdict.ALLOW
+class TestExtrasEdgeCases:
+    """Additional edge cases for requirements.txt parsing."""
 
-        assert computed == Verdict.REVIEW
+    def test_extras_with_version_range_not_false_positive(self, tmp_path):
+        f = tmp_path / "requirements.txt"
+        f.write_text("litellm[proxy]>=1.82.9,<2.0\n")
+        fw = SupplyChainFirewall()
+        r = fw.scan_manifest(str(f))
+        assert r.blocked == 0
+
+    def test_vcs_url_not_matched_as_package(self, tmp_path):
+        f = tmp_path / "requirements.txt"
+        f.write_text("git+https://github.com/example/repo.git#egg=pkg\nhttps://example.com/pkg.tar.gz\nflask==2.0.0\n")
+        fw = SupplyChainFirewall()
+        r = fw.scan_manifest(str(f))
+        assert r.total_packages == 1  # Only flask
+
+    def test_empty_requirements_file(self, tmp_path):
+        f = tmp_path / "requirements.txt"
+        f.write_text("")
+        fw = SupplyChainFirewall()
+        r = fw.scan_manifest(str(f))
+        assert r.total_packages == 0
+        assert r.overall_verdict == Verdict.ALLOW
+
+    def test_empty_package_json(self, tmp_path):
+        f = tmp_path / "package.json"
+        f.write_text("{}")
+        fw = SupplyChainFirewall()
+        r = fw.scan_manifest(str(f))
+        assert r.total_packages == 0
+        assert r.overall_verdict == Verdict.ALLOW
+
+
+class TestPackageLockV3:
+    """Test package-lock.json v3 format (npm 7+)."""
+
+    def test_v3_format_detects_compromised_package(self, tmp_path):
+        import json
+        f = tmp_path / "package-lock.json"
+        f.write_text(json.dumps({
+            "lockfileVersion": 3,
+            "packages": {
+                "": {"name": "my-app", "version": "1.0.0"},
+                "node_modules/express": {"version": "4.18.0"},
+                "node_modules/event-stream": {"version": "3.3.6"},
+            }
+        }))
+        fw = SupplyChainFirewall()
+        r = fw.scan_manifest(str(f))
+        assert r.blocked == 1
+        assert r.total_packages == 2  # express + event-stream (not root)
+
+    def test_v3_format_clean(self, tmp_path):
+        import json
+        f = tmp_path / "package-lock.json"
+        f.write_text(json.dumps({
+            "lockfileVersion": 3,
+            "packages": {
+                "": {"name": "my-app"},
+                "node_modules/express": {"version": "4.18.0"},
+            }
+        }))
+        fw = SupplyChainFirewall()
+        r = fw.scan_manifest(str(f))
+        assert r.blocked == 0
+        assert r.total_packages == 1

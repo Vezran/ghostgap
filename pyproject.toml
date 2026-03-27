@@ -45,3 +45,6 @@ ghostgap = "ghostgap.launcher:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+markers = ["slow: marks tests that require network or long execution"]
