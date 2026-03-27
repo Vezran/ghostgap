@@ -1537,7 +1537,7 @@ class SupplyChainFirewall:
             pass
 
         # Reinstall clean version
-        if threat and result.was_infected:
+        if threat and result.was_infected and threat.safe_version not in ("N/A", ""):
             proc = subprocess.run(
                 [sys.executable, "-m", "pip", "install", "--force-reinstall",
                  package + "==" + threat.safe_version],
@@ -1754,12 +1754,6 @@ class SupplyChainFirewall:
         .pth files from site-packages. By using `find` we avoid triggering them.
         """
         hits = []
-        target_versions = set()
-        for record in self.threat_feed.list_all():
-            if record.ecosystem == Ecosystem.PYTHON:
-                for v in record.bad_versions:
-                    target_versions.add((record.package, v))
-
         # Use system find to locate dist-info dirs without loading Python
         search_roots = ["/usr/lib", "/usr/local/lib"]
         home = str(Path.home())
@@ -1893,13 +1887,19 @@ class SupplyChainFirewall:
             "X-GitHub-Api-Version": "2022-11-28",
         }
 
-        target_versions = set()
+        # Build per-package bad version map for all Python threats
+        bad_versions_by_pkg: Dict[str, Set[str]] = {}
+        pkg_names: Set[str] = set()
         for record in self.threat_feed.list_all():
             if record.ecosystem == Ecosystem.PYTHON:
+                pkg_names.add(record.package)
                 for v in record.bad_versions:
-                    target_versions.add(v)
+                    bad_versions_by_pkg.setdefault(record.package.lower(), set()).add(v)
 
-        version_pattern = re.compile(r"litellm[=\-](\d+\.\d+\.\d+)", re.IGNORECASE)
+        if not pkg_names:
+            return hits
+        pattern_str = "(" + "|".join(re.escape(p) for p in sorted(pkg_names)) + r")[=\- ](\d+\.\d+\.\d+)"
+        version_pattern = re.compile(pattern_str, re.IGNORECASE)
 
         if not re.match(r'^[A-Za-z0-9_.-]+$', org):
             return hits
@@ -1946,18 +1946,22 @@ class SupplyChainFirewall:
 
                             for line in log_text.splitlines():
                                 m = version_pattern.search(line)
-                                if m and m.group(1) in target_versions:
-                                    hits.append({
-                                        "source": "github",
-                                        "repo": full_name,
-                                        "run_id": run_id,
-                                        "job_id": job_id,
-                                        "job_name": job.get("name", ""),
-                                        "version": m.group(1),
-                                        "log_line": line.strip()[:200],
-                                        "url": job.get("html_url", ""),
-                                    })
-                                    break  # One hit per job is enough
+                                if m:
+                                    pkg_match = m.group(1).lower()
+                                    ver_match = m.group(2)
+                                    if ver_match in bad_versions_by_pkg.get(pkg_match, set()):
+                                        hits.append({
+                                            "source": "github",
+                                            "repo": full_name,
+                                            "run_id": run_id,
+                                            "job_id": job_id,
+                                            "job_name": job.get("name", ""),
+                                            "package": pkg_match,
+                                            "version": ver_match,
+                                            "log_line": line.strip()[:200],
+                                            "url": job.get("html_url", ""),
+                                        })
+                                        break  # One hit per job is enough
                         except Exception:
                             continue
             except Exception:
@@ -1988,13 +1992,19 @@ class SupplyChainFirewall:
 
         headers = {"PRIVATE-TOKEN": token}
 
-        target_versions = set()
+        # Build per-package bad version map for all Python threats
+        bad_versions_by_pkg: Dict[str, Set[str]] = {}
+        pkg_names: Set[str] = set()
         for record in self.threat_feed.list_all():
             if record.ecosystem == Ecosystem.PYTHON:
+                pkg_names.add(record.package)
                 for v in record.bad_versions:
-                    target_versions.add(v)
+                    bad_versions_by_pkg.setdefault(record.package.lower(), set()).add(v)
 
-        version_pattern = re.compile(r"litellm[=\-](\d+\.\d+\.\d+)", re.IGNORECASE)
+        if not pkg_names:
+            return hits
+        pattern_str = "(" + "|".join(re.escape(p) for p in sorted(pkg_names)) + r")[=\- ](\d+\.\d+\.\d+)"
+        version_pattern = re.compile(pattern_str, re.IGNORECASE)
 
         if not re.match(r'^[A-Za-z0-9_%-]+(/[A-Za-z0-9_%-]+)*$', group):
             return hits
@@ -2052,17 +2062,21 @@ class SupplyChainFirewall:
 
                         for line in trace.splitlines():
                             m = version_pattern.search(line)
-                            if m and m.group(1) in target_versions:
-                                hits.append({
-                                    "source": "gitlab",
-                                    "project": pname,
-                                    "job_id": job_id,
-                                    "job_name": job.get("name", ""),
-                                    "version": m.group(1),
-                                    "log_line": line.strip()[:200],
-                                    "url": "https://gitlab.com/" + pname + "/-/jobs/" + str(job_id),
-                                })
-                                break
+                            if m:
+                                pkg_match = m.group(1).lower()
+                                ver_match = m.group(2)
+                                if ver_match in bad_versions_by_pkg.get(pkg_match, set()):
+                                    hits.append({
+                                        "source": "gitlab",
+                                        "project": pname,
+                                        "job_id": job_id,
+                                        "job_name": job.get("name", ""),
+                                        "package": pkg_match,
+                                        "version": ver_match,
+                                        "log_line": line.strip()[:200],
+                                        "url": "https://gitlab.com/" + pname + "/-/jobs/" + str(job_id),
+                                    })
+                                    break
                     except Exception:
                         continue
             except Exception:

@@ -82,7 +82,7 @@ while IFS= read -r site_dir; do
             echo -e "${GREEN}  ✓ Quarantined${RESET}"
         fi
     done
-done < <(find "${SEARCH_PATHS[@]}" -type d -name "site-packages" -maxdepth 12 2>/dev/null | sort -u)
+done < <(find "${SEARCH_PATHS[@]}" -maxdepth 12 -type d -name "site-packages" 2>/dev/null | sort -u)
 
 if [ "$FOUND_PTH" -eq 0 ]; then
     echo -e "${GREEN}  ✓ No malicious .pth files found${RESET}"

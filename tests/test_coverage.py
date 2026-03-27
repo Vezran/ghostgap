@@ -523,6 +523,7 @@ class TestScanCiGithub:
 
         assert len(hits) >= 1
         assert hits[0]["repo"] == "myorg/myrepo"
+        assert hits[0]["package"] == "litellm"
         assert hits[0]["version"] == "1.82.7"
         assert hits[0]["job_name"] == "build"
 
