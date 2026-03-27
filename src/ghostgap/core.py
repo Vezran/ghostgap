@@ -648,6 +648,8 @@ class SupplyChainFirewall:
                         total_py += 1
                         fp = os.path.join(root, f)
                         try:
+                            if os.path.getsize(fp) > 500_000:
+                                continue
                             with open(fp, "r", errors="ignore") as fh:
                                 code = fh.read()
                             for pat in CREDENTIAL_CODE_PATTERNS:
@@ -718,6 +720,8 @@ class SupplyChainFirewall:
                             continue
                         fp = os.path.join(root, f)
                         try:
+                            if os.path.getsize(fp) > 500_000:
+                                continue
                             with open(fp, "r", errors="ignore") as fh:
                                 code = fh.read()
                             for pat in NPM_MALICIOUS_PATTERNS:
@@ -818,6 +822,18 @@ class SupplyChainFirewall:
 
     def _scan_npm_manifest(self, path: str) -> ManifestReport:
         report = ManifestReport(manifest_path=path, ecosystem=Ecosystem.NODEJS)
+        bn = os.path.basename(path).lower()
+        if bn in ("yarn.lock", "pnpm-lock.yaml"):
+            # These formats require dedicated parsers not yet implemented
+            report.verdicts.append(ScanVerdict(
+                package="<lockfile>", version="", ecosystem=Ecosystem.NODEJS,
+                verdict=Verdict.REVIEW,
+                threats=["UNSUPPORTED FORMAT: " + bn + " — use package.json instead"],
+                recommendation="Scan package.json for threat detection",
+            ))
+            report.review = 1
+            report.overall_verdict = Verdict.REVIEW
+            return report
         try:
             with open(path) as f:
                 data = json.load(f)
@@ -972,6 +988,8 @@ class SupplyChainFirewall:
         for line in content.splitlines():
             line = line.strip()
             if not line or line.startswith("//") or line.startswith("module ") or line.startswith("go "):
+                continue
+            if "/go.mod " in line:
                 continue
             m = re.match(r"^(\S+)\s+v?(\d+\.\d+\.\d+)", line)
             if m:
@@ -1407,7 +1425,9 @@ class SupplyChainFirewall:
         # Delete backdoor files
         for f in backdoor_files:
             try:
-                if os.path.isdir(f):
+                if os.path.islink(f):
+                    os.unlink(f)
+                elif os.path.isdir(f):
                     shutil.rmtree(f)
                 else:
                     os.remove(f)
@@ -1418,7 +1438,9 @@ class SupplyChainFirewall:
         # Delete persistence
         for f in persistence_found:
             try:
-                if os.path.isdir(f):
+                if os.path.islink(f):
+                    os.unlink(f)
+                elif os.path.isdir(f):
                     shutil.rmtree(f)
                 else:
                     os.remove(f)
@@ -1542,9 +1564,9 @@ class SupplyChainFirewall:
 
         # Azure
         azure_dir = home + "/.azure"
-        if os.path.exists(azure_dir):
+        if os.path.exists(azure_dir) and not os.path.islink(azure_dir):
             backup = azure_dir + "_compromised_" + str(int(time.time()))
-            shutil.copytree(azure_dir, backup)
+            shutil.copytree(azure_dir, backup, symlinks=True)
             for f in _glob.glob(azure_dir + "/*.json"):
                 os.remove(f)
             rotated["Azure"] = True
@@ -1633,8 +1655,13 @@ class SupplyChainFirewall:
                         threat_category=threat.threat_category,
                         recommendation="Immediately run: ghostgap cure " + name,
                     ))
-        except Exception:
-            pass
+        except Exception as e:
+            hits.append(ScanVerdict(
+                package="<scan-all>", version="", ecosystem=Ecosystem.PYTHON,
+                verdict=Verdict.REVIEW,
+                threats=["SCAN_FAILED: Could not list installed packages — " + str(e)],
+                recommendation="Run 'pip list' manually to verify",
+            ))
         return hits
 
     # ── Deep Filesystem Scan ─────────────────────────────────────────────
@@ -1756,7 +1783,7 @@ class SupplyChainFirewall:
                                     "package": "[.pth persistence]",
                                     "version": pth_name,
                                     "path": pth,
-                                    "env_type": env_type if 'env_type' in dir() else "unknown",
+                                    "env_type": env_type if 'env_type' in locals() else "unknown",
                                     "threat": "persistence",
                                     "actor": record.actor,
                                     "safe_version": "delete this file",
@@ -1803,6 +1830,9 @@ class SupplyChainFirewall:
 
         version_pattern = re.compile(r"litellm[=\-](\d+\.\d+\.\d+)", re.IGNORECASE)
 
+        if not re.match(r'^[A-Za-z0-9_.-]+$', org):
+            return hits
+
         # Get repos
         try:
             url = "https://api.github.com/orgs/" + org + "/repos?per_page=100&type=all"
@@ -1810,7 +1840,7 @@ class SupplyChainFirewall:
             resp = urllib.request.urlopen(req, timeout=30)
             repos = json.loads(resp.read())
         except Exception:
-            return hits
+            return hits  # Swallow to prevent token leakage in tracebacks
 
         for repo in repos:
             full_name = repo.get("full_name", "")
@@ -1894,6 +1924,9 @@ class SupplyChainFirewall:
                     target_versions.add(v)
 
         version_pattern = re.compile(r"litellm[=\-](\d+\.\d+\.\d+)", re.IGNORECASE)
+
+        if not re.match(r'^[A-Za-z0-9_./%-]+$', group):
+            return hits
 
         # Get group ID
         try:

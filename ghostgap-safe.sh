@@ -227,17 +227,18 @@ if os.path.isdir(sp):
 from ghostgap.cli import main
 sys.argv = ['ghostgap', 'cure']
 main()
-" || {
-    echo -e "${YELLOW}  ghostgap not available — manual steps:${RESET}"
+"
+CURE_EXIT=$?
+
+if [ $CURE_EXIT -ne 0 ]; then
+    echo -e "${YELLOW}  ghostgap cure failed (exit $CURE_EXIT) — manual steps:${RESET}"
     echo -e "${YELLOW}    1. Rotate all SSH keys: ssh-keygen -t ed25519${RESET}"
     echo -e "${YELLOW}    2. Rotate AWS keys: aws iam create-access-key${RESET}"
     echo -e "${YELLOW}    3. Re-auth GCP: gcloud auth application-default login${RESET}"
     echo -e "${YELLOW}    4. Re-auth Azure: az login${RESET}"
     echo -e "${YELLOW}    5. Regenerate K8s config${RESET}"
     echo -e "${YELLOW}    6. Revoke all GitHub/GitLab tokens${RESET}"
-}
-
-CURE_EXIT=$?
+fi
 echo ""
 if [ "$FOUND_PTH" -eq 1 ] || [ "$FOUND_PERSIST" -eq 1 ]; then
     if [ "$CURE_EXIT" -eq 0 ]; then
