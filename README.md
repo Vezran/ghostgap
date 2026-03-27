@@ -8,6 +8,7 @@
     <a href="https://pypi.org/project/ghostgap/"><img src="https://img.shields.io/pypi/v/ghostgap?color=blue" alt="PyPI"></a>
     <a href="https://github.com/Vezran/ghostgap/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-green" alt="License"></a>
     <a href="https://pypi.org/project/ghostgap/"><img src="https://img.shields.io/pypi/pyversions/ghostgap" alt="Python"></a>
+    <a href="https://github.com/Vezran/ghostgap/actions/workflows/tests.yml"><img src="https://github.com/Vezran/ghostgap/actions/workflows/tests.yml/badge.svg" alt="Tests"></a>
   </p>
 </p>
 
