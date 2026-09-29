@@ -5,3 +5,5 @@ __pycache__/
 build/
 .venv/
 __pycache__/
+
+.DS_Store
